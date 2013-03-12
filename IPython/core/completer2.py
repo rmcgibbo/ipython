@@ -14,6 +14,7 @@
 #-----------------------------------------------------------------------------
 
 import os
+import sys
 import re
 import abc
 from collections import defaultdict
@@ -42,8 +43,8 @@ class CompletionManager(Configurable):
     new matcher classes, and ask for the completions on a block of text.
     """
 
-    greedy = CBool(False, config=True,
-        help="""Activate greedy completion
+    greedy = CBool(False, config=True, help="""
+        Activate greedy completion
 
         This will enable completion on elements of lists, results of function
         calls, etc., but can be unsafe because the code is actually evaluated
@@ -139,8 +140,8 @@ class RLCompletionManager(CompletionManager):
         import IPython.utils.rlineimpl as readline
 
         self.readline = readline
-        term = os.environ.get('TERM','xterm')
-        self.dumb_terminal = term in ['dumb','emacs']
+        term = os.environ.get('TERM', 'xterm')
+        self.dumb_terminal = term in ['dumb', 'emacs']
 
         # this is the buffer where readline flattened completions are held
         # between calls by the readline module to the rlcomplete method
@@ -195,6 +196,7 @@ class RLCompletionManager(CompletionManager):
             return self._completions[state]
         except IndexError:
             return None
+
 
 class BaseMatcher(object, Configurable):
     """Abstract base class to be subclasses by all matchers.
