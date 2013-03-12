@@ -21,6 +21,7 @@ import tokenize as _tokenizelib
 # Code
 #-----------------------------------------------------------------------------
 
+
 def tokenize(src):
     """Tokenize a block of python source code using the stdlib's tokenizer.
 
@@ -61,11 +62,13 @@ def tokenize(src):
     e.g. `tokenize("'a' + '''bc'''") == ["'a'", "+", "'''bc'''"]` get parsed
     as single tokens.
     """
+
     raw_str = StringIO.StringIO(src)
     itoks = _tokenizelib.generate_tokens(raw_str.readline)
+
     def run():
         try:
-            for toktype, toktext, (srow, scol), (erow, ecol), line  in itoks:
+            for toktype, toktext, (srow, scol), (erow, ecol), line in itoks:
                 if toktype != _tokenizelib.ENDMARKER:
                     yield toktext
         except _tokenizelib.TokenError:
