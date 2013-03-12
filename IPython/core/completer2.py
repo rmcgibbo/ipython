@@ -14,10 +14,15 @@
 #-----------------------------------------------------------------------------
 
 import os
+import re
 import abc
+from collections import defaultdict
 
-# from IPython.utils.traitlets import CBool, Enum
+from IPython.config.configurable import Configurable
+from IPython.utils.tokens import tokenize
 
+# Public API
+__all__ = ['CompletionManager', 'BaseMatcher']
 
 DELIMS = ' \t\n`!@#$^&*()=+[{]}\\|;:\'",<>?'
 GREEDY_DELIMS = ' =\r\n'
@@ -26,16 +31,27 @@ GREEDY_DELIMS = ' =\r\n'
 # Classes
 #-----------------------------------------------------------------------------
 
+
 class CompletionManager(Configurable):
-    def __init__(self, config=None):
+    """Main entry point for the tab completion system. Here, you can register
+    new matcher classes, and ask for the completions on a block of text.
+    """
+    
+    def __init__(self, config=None, **kwargs):
         self.splitter = CompletionSplitter()
         self.matchers = []
-        self.exclusive_matchers = []
+        
+        super(CompletionManager, self).__init__(config=config, **kwargs)
+        # self.exclusive_matchers = []
 
-    def register_completer(self, completer):
-        """Register a new completer
+    def register_matcher(self, matcher):
+        """Register a new matcher
         """
-        pass
+        if isinstance(matcher, BaseMatcher):
+            self.matchers.append(matcher)
+        else:
+            raise TypeError('%s object is not an instance of BaseMatcher' %
+                            type(matcher))
 
     def complete(self, block, cursor_position=None):
         """Recommend possible completions for a given input block
@@ -53,24 +69,38 @@ class CompletionManager(Configurable):
         Returns
         -------
         completions : dict, {str -> list(str)}
-            The keys of the completions dict are the 'kind' of the completion,
-            which may be displayed in rich frontends. Example 'kinds' might
-            be, but are not limited to 'file', 'directory', 'object',
-            'keyword argument'.
+            The keys of the completions dict are the 'kind' of the
+            completion, which may be displayed in rich frontends. Example
+            'kinds' might be, but are not limited to 'file', 'directory',
+            'object', 'keyword argument'.
         """
         event = CompletionEvent(block[:cursor_position], self.splitter)
+        collected_matches = defaultdict(lambda: set([]))
 
+        for matcher in self.matchers:
+            these_matches = matcher.match(event)
+            if matcher.exclusive:
+                collected_matches = these_matches
+                break
 
-        # preprocess line to create a CompletionEvent
-        # call all of the matchers
-        # merge their results, and for each merged set of completions,
-        # listify and sort it before returning it.
-        pass
+            # merge these matches into the collected matches. for each
+            # kind, we want to merge the sets of match strings. It is not
+            # possible for there to be two semantically different matches
+            # that are the same kind and the same match string, so the
+            # uniqueifying aspect of the set update is appropriate
+            for kind, v in these_matches:
+                collected_matches[kind].update(v)
+
+        return dict((kind, sorted(v)) for kind, v in collected_matches.items())
 
 
 class BaseMatcher(object):
+    """Abstract base class to be subclasses by all matchers.
+    """
+    
     __metaclass__ = abc.ABCMeta
 
+    @property
     def exclusive(self):
         """Should the completions returned by this matcher be the *exclusive*
         matches displayed to the user?
@@ -143,12 +173,13 @@ class CompletionEvent(object):
         if splitter is None:
             splitter = CompletionSplitter()
         self.split = splitter.split(block)
+        self._tokens = None
 
     @property
     def tokens(self):
         if self._tokens is None:
             # process the line into tokens
-            self._tokens = []
+            self._tokens = tokenize(self.block)
         return self._tokens
 
 
@@ -191,7 +222,7 @@ class CompletionSplitter(object):
     @delims.setter
     def delims(self, delims):
         """Set the delimiters for line splitting."""
-        expr = '[' + ''.join('\\'+ c for c in delims) + ']'
+        expr = '[' + ''.join('\\' + c for c in delims) + ']'
         self._delim_re = re.compile(expr)
         self._delims = delims
         self._delim_expr = expr
