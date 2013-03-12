@@ -22,11 +22,15 @@ from IPython.config.configurable import Configurable
 from IPython.utils.traitlets import CBool
 from IPython.utils.tokens import tokenize
 
-# Public API
-__all__ = ['CompletionManager', 'BaseMatcher']
+#-----------------------------------------------------------------------------
+# Globals
+#-----------------------------------------------------------------------------
 
 DELIMS = ' \t\n`!@#$^&*()=+[{]}\\|;:\'",<>?'
 GREEDY_DELIMS = ' =\r\n'
+
+# Public API
+__all__ = ['CompletionManager', 'BaseMatcher']
 
 #-----------------------------------------------------------------------------
 # Classes
@@ -37,6 +41,20 @@ class CompletionManager(Configurable):
     """Main entry point for the tab completion system. Here, you can register
     new matcher classes, and ask for the completions on a block of text.
     """
+
+    greedy = CBool(False, config=True,
+        help="""Activate greedy completion
+
+        This will enable completion on elements of lists, results of function
+        calls, etc., but can be unsafe because the code is actually evaluated
+        on TAB.""")
+
+    def _greedy_changed(self, name, old, new):
+        """update the splitter and readline delims when greedy is changed"""
+        if new:
+            self.splitter.delims = GREEDY_DELIMS
+        else:
+            self.splitter.delims = DELIMS
 
     def __init__(self, config=None, **kwargs):
         self.splitter = CompletionSplitter()
