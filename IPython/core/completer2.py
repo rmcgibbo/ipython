@@ -132,6 +132,70 @@ class CompletionManager(Configurable):
         return dict((kind, sorted(v)) for kind, v in collected_matches.items())
 
 
+class RLCompletionManager(CompletionManager):
+    """A readline version of the CompletionManager"""
+
+    def __init__(self, config=None):
+        import IPython.utils.rlineimpl as readline
+
+        self.readline = readline
+        term = os.environ.get('TERM','xterm')
+        self.dumb_terminal = term in ['dumb','emacs']
+
+        # this is the buffer where readline flattened completions are held
+        # between calls by the readline module to the rlcomplete method
+        self._completions = None
+
+        super(RLCompletionManager, self).__init__(self, config=config)
+
+    def _greedy_changed(self, name, old, new):
+        super(RLCompletionManager, self)._greedy_changed(name, old, new)
+        if self.readline:
+            self.readline.set_completer_delims(self.splitter.delims)
+
+    def rlcomplete(self, text, state):
+        """Return the state-th possible completion for 'text'.
+
+        This is called successively with state == 0, 1, 2, ... until it
+        returns None.  The completion should begin with 'text'.
+
+        Parameters
+        ----------
+        text : string
+            Text to perform the completion on.
+
+        state : int
+            Counter used by readline.
+        """
+
+        if state == 0:
+            line_buffer = self.readline.get_line_buffer()
+            cursor_position = self.readline.get_endidx()
+            completions = self.complete(line_buffer, cursor_position)
+            self._completions = sorted(set(completions.values()))
+
+            # if there is only a tab on a line with only whitespace, instead of
+            # the mostly useless 'do you want to see all million completions'
+            # message, just do the right thing and give the user his tab!
+            # Incidentally, this enables pasting of tabbed text from an editor
+            # (as long as autoindent is off).
+
+            # It should be noted that at least pyreadline still shows file
+            # completions - is there a way around it?
+
+            # don't apply this on 'dumb' terminals, such as emacs buffers, so
+            # we don't interfere with their own tab-completion mechanism.
+
+            if not (self.dumb_terminal or line_buffer.strip()):
+                self.readline.insert_text('\t')
+                sys.stdout.flush()
+                return None
+
+        try:
+            return self._completions[state]
+        except IndexError:
+            return None
+
 class BaseMatcher(object, Configurable):
     """Abstract base class to be subclasses by all matchers.
     """
