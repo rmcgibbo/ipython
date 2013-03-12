@@ -19,6 +19,7 @@ import abc
 from collections import defaultdict
 
 from IPython.config.configurable import Configurable
+from IPython.utils.traitlets import CBool
 from IPython.utils.tokens import tokenize
 
 # Public API
@@ -36,22 +37,38 @@ class CompletionManager(Configurable):
     """Main entry point for the tab completion system. Here, you can register
     new matcher classes, and ask for the completions on a block of text.
     """
-    
+
     def __init__(self, config=None, **kwargs):
         self.splitter = CompletionSplitter()
         self.matchers = []
-        
+
         super(CompletionManager, self).__init__(config=config, **kwargs)
-        # self.exclusive_matchers = []
 
     def register_matcher(self, matcher):
         """Register a new matcher
         """
         if isinstance(matcher, BaseMatcher):
-            self.matchers.append(matcher)
+            if matcher.exclusive:
+                # for efficiency, put exclusive matchers at the beginning
+                # of the matchers list.
+                self.matchers.insert(matcher, 0)
+            else:
+                self.matchers.append(matcher)
+            matcher._set_completion_manager(self)
         else:
             raise TypeError('%s object is not an instance of BaseMatcher' %
                             type(matcher))
+
+    def _matcher_exclusive_changed(self, matcher):
+        """Notify the CompletionManager that one of its matchers has changed
+        its exclusivity policy.
+        """
+
+        if matcher not in self.matchers:
+            raise ValueError('the matcher being notified on is not registered')
+        # re-insert it into the list of matchers
+        self.matchers.remove(matcher)
+        self.register_matcher(matcher)
 
     def complete(self, block, cursor_position=None):
         """Recommend possible completions for a given input block
@@ -79,39 +96,62 @@ class CompletionManager(Configurable):
 
         for matcher in self.matchers:
             these_matches = matcher.match(event)
-            if matcher.exclusive:
+            if matcher.exclusive and (these_matches is not None) and \
+                    (len(these_matches) > 0):
+            # if the matcher is `exclusive`, we ONLY return its results
                 collected_matches = these_matches
                 break
 
-            # merge these matches into the collected matches. for each
-            # kind, we want to merge the sets of match strings. It is not
-            # possible for there to be two semantically different matches
-            # that are the same kind and the same match string, so the
-            # uniqueifying aspect of the set update is appropriate
-            for kind, v in these_matches:
-                collected_matches[kind].update(v)
+            if these_matches is not None:
+                # merge these matches into the collected matches. for each
+                # kind, we want to merge the sets of match strings. It is not
+                # possible for there to be two semantically different matches
+                # that are the same kind and the same match string, so the
+                # uniqueifying aspect of the set update is appropriate
+                for kind, v in these_matches:
+                    collected_matches[kind].update(v)
 
         return dict((kind, sorted(v)) for kind, v in collected_matches.items())
 
 
-class BaseMatcher(object):
+class BaseMatcher(object, Configurable):
     """Abstract base class to be subclasses by all matchers.
     """
-    
+
     __metaclass__ = abc.ABCMeta
 
-    @property
-    def exclusive(self):
-        """Should the completions returned by this matcher be the *exclusive*
+    exclusive = CBool(False, config=True, help="""
+        Should the completions returned by this matcher be the *exclusive*
         matches displayed to the user?
 
-        If this property is true, other when this matcher returns sucesfully,
-        its results will be shown exclusively to the client. Other matches
-        will be excluded. This is generally not required, but may be suitable
-        for use in contexts in which highly specialized inputs are required
-        by the user, and other inputs may be invalid.
+        If this property is true, other when this matcher returns more than
+        one match, its results will be shown exclusively to the client. Other
+        matches will be excluded. This is generally not required, but may be
+        suitable for use in contexts in which highly specialized inputs are
+        required by the user, and other inputs may be invalid.
+        """)
+
+    def _exclusive_changed(self, name, old, new):
+        """Notify the manager that the exclusivity of this matcher has
+        changed"""
+        if new != old and (getattr(self, '_completion_manager', None)
+                           is not None):
+            self._completion_manager._matcher_exclusive_changed(self)
+
+    def _set_completion_manager(self, completion_manager):
+        """Set a reference to the manager handling this matcher
+
+        This is a callback, called by CompletionManager when the matcher is
+        registered.
         """
-        return False
+        # although it's bad practice to define attributes outside __init__,
+        # this seems like a special case since it allows us not to have to
+        # define an __init__ at all, which frees the subclasses that inherit
+        # from this base from having to call super(). If we end up needing
+        # to define an __init__ in this base class anyways,
+        # self._completion_manager should be set to None, and then
+        # _exclusive_changed will not have to use getattr.
+        self._completion_manager = completion_manager
 
     @abc.abstractmethod
     def match(self, event):
@@ -125,9 +165,10 @@ class BaseMatcher(object):
 
         Returns
         -------
-        completions : dict, {str -> set(str)}
+        completions : dict, {str -> set(str)}, or None
             The returned completions shall be a dict, mapping the 'kind' of
-            the completion to a set of the recommend strings.
+            the completion to a set of the recommend strings. The return value
+            may also be None, to indicate that no matches were found.
         """
         pass
 
