@@ -29,7 +29,9 @@ GREEDY_DELIMS = ' =\r\n'
 class CompletionManager(Configurable):
     def __init__(self, config=None):
         self.splitter = CompletionSplitter()
-    
+        self.matchers = []
+        self.exclusive_matchers = []
+
     def register_completer(self, completer):
         """Register a new completer
         """
@@ -56,6 +58,9 @@ class CompletionManager(Configurable):
             be, but are not limited to 'file', 'directory', 'object',
             'keyword argument'.
         """
+        event = CompletionEvent(block[:cursor_position], self.splitter)
+
+
         # preprocess line to create a CompletionEvent
         # call all of the matchers
         # merge their results, and for each merged set of completions,
@@ -121,7 +126,7 @@ class CompletionEvent(object):
 
     def __init__(self, block, splitter=None):
         """Create a CompletionEvent
-        
+
         Parameters
         ----------
         block : str
@@ -137,7 +142,7 @@ class CompletionEvent(object):
 
         if splitter is None:
             splitter = CompletionSplitter()
-        self.split = splitter.split_line(block)
+        self.split = splitter.split(block)
 
     @property
     def tokens(self):
@@ -191,10 +196,7 @@ class CompletionSplitter(object):
         self._delims = delims
         self._delim_expr = expr
 
-    def split_line(self, line, cursor_pos=None):
+    def split(self, block):
         """Split a line of text with a cursor at the given position.
         """
-        l = line if cursor_pos is None else line[:cursor_pos]
-        return self._delim_re.split(l)[-1]
-
-
+        return self._delim_re.split(block)
