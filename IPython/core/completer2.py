@@ -22,6 +22,8 @@ from collections import defaultdict
 from IPython.config.configurable import Configurable
 from IPython.utils.traitlets import CBool
 from IPython.utils.tokens import tokenize
+from IPython.core.ipapi import get as get_ipython
+
 
 #-----------------------------------------------------------------------------
 # Globals
@@ -60,6 +62,7 @@ class CompletionManager(Configurable):
     def __init__(self, config=None, **kwargs):
         self.splitter = CompletionSplitter()
         self.matchers = []
+        self.namespace = get_ipython().user_ns
 
         super(CompletionManager, self).__init__(config=config, **kwargs)
 
@@ -110,7 +113,7 @@ class CompletionManager(Configurable):
             'kinds' might be, but are not limited to 'file', 'directory',
             'object', 'keyword argument'.
         """
-        event = CompletionEvent(block[:cursor_position], self.splitter)
+        event = CompletionEvent(block[:cursor_position], self, self.splitter)
         collected_matches = defaultdict(lambda: set([]))
 
         for matcher in self.matchers:
@@ -127,7 +130,7 @@ class CompletionManager(Configurable):
                 # possible for there to be two semantically different matches
                 # that are the same kind and the same match string, so the
                 # uniqueifying aspect of the set update is appropriate
-                for kind, v in these_matches:
+                for kind, v in these_matches.iteritems():
                     collected_matches[kind].update(v)
 
         return dict((kind, sorted(v)) for kind, v in collected_matches.items())
@@ -198,11 +201,9 @@ class RLCompletionManager(CompletionManager):
             return None
 
 
-class BaseMatcher(object, Configurable):
+class BaseMatcher(Configurable):
     """Abstract base class to be subclasses by all matchers.
     """
-
-    __metaclass__ = abc.ABCMeta
 
     exclusive = CBool(False, config=True, help="""
         Should the completions returned by this matcher be the *exclusive*
@@ -237,7 +238,6 @@ class BaseMatcher(object, Configurable):
         # _exclusive_changed will not have to use getattr.
         self._completion_manager = completion_manager
 
-    @abc.abstractmethod
     def match(self, event):
         """Recommend matches for a tab-completion event
 
@@ -254,7 +254,7 @@ class BaseMatcher(object, Configurable):
             the completion to a set of the recommend strings. The return value
             may also be None, to indicate that no matches were found.
         """
-        pass
+        raise NotImplementedError('This method should be implemented by subclasses')
 
 
 class CompletionEvent(object):
@@ -266,12 +266,16 @@ class CompletionEvent(object):
         The complete input block, upto the cursor position.
     lines : list
         The block, after splitting on newlines.
+    line : str
+        The last line
     split : list
         A list of strings, formed by splitting `block` on all readline
         delimiters.
     text : str
         The last element in `split`. For readline clients, all matches are
         expected to start with `text`.
+    manager : CompletionManager
+        A pointer to the completion manager that dispatched this event
 
     Properties
     ----------
@@ -279,7 +283,7 @@ class CompletionEvent(object):
         A list of tokens formed by running the python tokenizer on `line`.
     """
 
-    def __init__(self, block, splitter=None):
+    def __init__(self, block, manager, splitter=None):
         """Create a CompletionEvent
 
         Parameters
@@ -294,10 +298,15 @@ class CompletionEvent(object):
         """
         self.block = block
         self.lines = block.split(os.linesep)
+        self.manager = manager
 
         if splitter is None:
             splitter = CompletionSplitter()
         self.split = splitter.split(block)
+
+        self.text = self.split[-1]
+        self.line = self.lines[-1]
+
         self._tokens = None
 
     @property
@@ -307,6 +316,8 @@ class CompletionEvent(object):
             self._tokens = tokenize(self.block)
         return self._tokens
 
+    def __repr__(self):
+        return '<CompletionEvent: %s>' % str(self.__dict__)
 
 class CompletionSplitter(object):
     """An object to split an input line in a manner similar to readline.
