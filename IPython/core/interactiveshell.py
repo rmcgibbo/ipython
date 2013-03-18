@@ -1949,7 +1949,7 @@ class InteractiveShell(SingletonConfigurable):
         from IPython.core import completerlib2 as m
         self.Completer.register(m.GlobalMatcher, m.AttributeMatcher,
             m.FileMatcher, m.MagicsMatcher, m.AliasMatcher,
-            m.KeywordArgMatcher, m.CDMatcher, m.AliasLineMatcher)
+            m.KeywordArgMatcher, m.CDMatcher, m.ShellLineMatcher)
 
         if self.has_readline:
             self.set_readline_completer()

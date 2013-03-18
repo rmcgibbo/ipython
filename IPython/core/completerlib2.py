@@ -475,15 +475,25 @@ class CDMatcher(FileMatcher):
         return None
 
 
-class AliasLineMatcher(FileMatcher):
-    """This matcher does bash style completion when the line starts with
-    an alias, since aliases call directly to bash
+class ShellLineMatcher(FileMatcher):
+    """
+    If the line starts with either an alias or with the '!' character,
+    the string is invoked (almost) directly in sh, so we want to do
+    simple bash-style completion.
+
+    The one ipython specific thing here is that the user can quote
+    python variables inside of mustsashes. So let's recommend some of
+    those too, in addition to files and direcrories.
+
+    There's a slight trickiness, which is that since the mustasche is an
+    RL delimiter, we can't do perfectly...
     """
     exclusive = CBool(True)
 
     def match(self, event):
         have_matches = False
-        if event.split[0] not in self.shell.alias_manager.alias_table.keys():
+        aliases = self.shell.alias_manager.alias_table.keys()
+        if (event.split[0] not in aliases) and (event.line[0] != '!'):
             return None
 
         matches = super(AliasLineMatcher, self).match(event)
