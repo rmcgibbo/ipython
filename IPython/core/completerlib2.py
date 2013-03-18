@@ -221,7 +221,7 @@ class FileMatcher(BaseMatcher):
                 if open_quotes:
                     lsplit = line.split(open_quotes)[-1]
                 else:
-                    return []
+                    return None
             except IndexError:
                 # tab pressed on empty line
                 lsplit = ""
@@ -234,8 +234,16 @@ class FileMatcher(BaseMatcher):
             has_protectables = False
             text = os.path.expanduser(text)
 
+        matches = {'directories': set(), 'files': set()}
+
         if text == "":
-            return [text_prefix + protect_filename(f) for f in self.glob("*")]
+            for f in self.glob("*"):
+                match = text_prefix + protect_filename(f)
+                if os.path.isdir(f):
+                    matches['directories'].add(match + '/')
+                else:
+                    matches['files'].add(match)
+            return matches
 
         # Compute the matches from the filesystem
         m0 = self.clean_glob(text.replace('\\', ''))
@@ -245,8 +253,13 @@ class FileMatcher(BaseMatcher):
             # beginning of filename so that we don't double-write the part
             # of the filename we have so far
             len_lsplit = len(lsplit)
-            matches = [text_prefix + text0 +
-                       protect_filename(f[len_lsplit:]) for f in m0]
+            for f in m0:
+                match = text_prefix + text0 + protect_filename(f[len_lsplit:])
+                if os.path.isdir(f):
+                    matches['directories'].add(f + '/')
+                else:
+                    matches['files'].add(f)
+
         else:
             if open_quotes:
                 # if we have a string with an open quote, we don't need to
@@ -254,14 +267,17 @@ class FileMatcher(BaseMatcher):
                 # would cause bugs when the filesystem call is made).
                 matches = m0
             else:
-                matches = [text_prefix + protect_filename(f) for f in m0]
+                for f in m0:
+                    if os.path.isdir(f):
+                        matches['directories'].add(f + '/')
+                    else:
+                        matches['files'].add(f)
 
-        if len(matches) == 0:
+        if len(matches['files']) == 0 and len(matches['directories']) == 0:
             return None
 
         # Mark directories in input list by appending '/' to their names.
-        matches = [x + '/' if os.path.isdir(x) else x for x in matches]
-        return {'files': set(matches)}
+        return matches
 
 
 class MagicsMatcher(BaseMatcher):
@@ -428,6 +444,81 @@ class KeywordArgMatcher(BaseMatcher):
             arguments.add(self.docstring_kwd_re.findall(s))
 
         return arguments
+
+
+#-----------------------------------------------------------------------------
+# "Exclusive" completers
+# these only respond in certain cases, but when they do they give the
+# only results shown to the user
+#-----------------------------------------------------------------------------
+
+class CDMatcher(FileMatcher):
+    """Matcher that returns only directories for `cd`
+    """
+
+    # this is an `exclusive` matcher, which means only its results
+    # will be shown to the user, if it returns any. results from all
+    # other matchers will be excluded
+    exclusive = CBool(True)
+
+    def match(self, event):
+        # check that the user entered cd as the first item
+        # on the line
+        if event.split[0] == 'cd' and len(event.split) > 1:
+            filesystem_matches = super(CDMatcher, self).match(event)
+            if filesystem_matches:
+                return {'directories': filesystem_matches['directories']}
+
+        # Note, we need to add more features here, including
+        # the bookmarks and _dh stuff, to replicate what is currently
+        # available in the old cd completer
+        return None
+
+
+class AliasLineMatcher(FileMatcher):
+    """This matcher does bash style completion when the line starts with
+    an alias, since aliases call directly to bash
+    """
+    exclusive = CBool(True)
+
+    def match(self, event):
+        have_matches = False
+        if event.split[0] not in self.shell.alias_manager.alias_table.keys():
+            return None
+
+        matches = super(AliasLineMatcher, self).match(event)
+        if matches is not None:
+            have_matches = True
+            matches['locals'] = set()
+        else:
+            matches = {'locals': set()}
+
+        text = event.text
+
+        if (text == '' and event.tokens[-1] == '{') or event.tokens[-2] == '{':
+            prefix = ''
+        else:
+            prefix = '{'
+
+
+        n = len(text)
+        for word in set.union(set(self.shell.user_ns.keys()),
+                              set(self.shell.user_global_ns.keys())):
+            if word[:n] == text and not word.startswith('_'):
+                try:
+                    obj = eval(word, self.shell.user_ns)
+                except:
+                    continue
+
+                if isinstance(obj, int) or isinstance(obj, basestring):
+                    have_matches = True
+                    matches['locals'].add(prefix + word + '}')
+
+        if have_matches:
+            return matches
+        return None
+
+
 
 
 #-----------------------------------------------------------------------------

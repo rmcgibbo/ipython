@@ -79,7 +79,7 @@ class CompletionManager(Configurable):
                 if m.exclusive:
                     # for efficiency, put exclusive matchers at the beginning
                     # of the matchers list.
-                    self.registry.insert(m, 0)
+                    self.registry.insert(0, m)
                 else:
                     self.registry.append(m)
                 m._set_completion_manager(self)
