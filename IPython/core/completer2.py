@@ -16,11 +16,10 @@
 import os
 import sys
 import re
-import abc
 from collections import defaultdict
 
 from IPython.config.configurable import Configurable
-from IPython.utils.traitlets import CBool
+from IPython.utils.traitlets import CBool, Instance, MetaHasTraits, List
 from IPython.utils.tokens import tokenize
 
 #-----------------------------------------------------------------------------
@@ -44,6 +43,10 @@ class CompletionManager(Configurable):
     new matcher classes, and ask for the completions on a block of text.
     """
 
+    shell = Instance('IPython.core.interactiveshell.InteractiveShellABC')
+
+    registry = List
+
     greedy = CBool(False, config=True, help="""
         Activate greedy completion
 
@@ -58,36 +61,41 @@ class CompletionManager(Configurable):
         else:
             self.splitter.delims = DELIMS
 
-    def __init__(self, config=None, **kwargs):
+    def __init__(self, shell, config=None, **kwargs):
         self.splitter = CompletionSplitter()
-        self.matchers = []
-
+        self.shell = shell
         super(CompletionManager, self).__init__(config=config, **kwargs)
 
-    def register_matcher(self, matcher):
+    def register(self, *matcher_objects):
         """Register a new matcher
         """
-        if isinstance(matcher, BaseMatcher):
-            if matcher.exclusive:
-                # for efficiency, put exclusive matchers at the beginning
-                # of the matchers list.
-                self.matchers.insert(matcher, 0)
+
+        for m in matcher_objects:
+            if type(m) in (type, MetaHasTraits):
+                # If we're given an uninstantiated class
+                m = m(shell=self.shell, config=self.config)
+
+            if isinstance(m, BaseMatcher):
+                if m.exclusive:
+                    # for efficiency, put exclusive matchers at the beginning
+                    # of the matchers list.
+                    self.registry.insert(m, 0)
+                else:
+                    self.registry.append(m)
+                m._set_completion_manager(self)
             else:
-                self.matchers.append(matcher)
-            matcher._set_completion_manager(self)
-        else:
-            raise TypeError('%s object is not an instance of BaseMatcher' %
-                            type(matcher))
+                raise TypeError('%s object is not an instance of BaseMatcher' %
+                                type(m))
 
     def _matcher_exclusive_changed(self, matcher):
         """Notify the CompletionManager that one of its matchers has changed
         its exclusivity policy.
         """
 
-        if matcher not in self.matchers:
+        if matcher not in self.registry:
             raise ValueError('the matcher being notified on is not registered')
         # re-insert it into the list of matchers
-        self.matchers.remove(matcher)
+        self.registry.remove(matcher)
         self.register_matcher(matcher)
 
     def complete(self, block, cursor_position=None):
@@ -114,7 +122,7 @@ class CompletionManager(Configurable):
         event = CompletionEvent(block[:cursor_position], self, self.splitter)
         collected_matches = defaultdict(lambda: set([]))
 
-        for matcher in self.matchers:
+        for matcher in self.registry:
             these_matches = matcher.match(event)
             if matcher.exclusive and (these_matches is not None) and \
                     (len(these_matches) > 0):
@@ -138,7 +146,7 @@ class CompletionManager(Configurable):
 class RLCompletionManager(CompletionManager):
     """A readline version of the CompletionManager"""
 
-    def __init__(self, config=None):
+    def __init__(self, shell, config=None):
         import IPython.utils.rlineimpl as readline
 
         self.readline = readline
@@ -149,7 +157,7 @@ class RLCompletionManager(CompletionManager):
         # between calls by the readline module to the rlcomplete method
         self._completions = None
 
-        super(RLCompletionManager, self).__init__(self, config=config)
+        super(RLCompletionManager, self).__init__(shell=shell, config=config)
 
     def _greedy_changed(self, name, old, new):
         super(RLCompletionManager, self)._greedy_changed(name, old, new)
@@ -170,12 +178,16 @@ class RLCompletionManager(CompletionManager):
         state : int
             Counter used by readline.
         """
-
         if state == 0:
             line_buffer = self.readline.get_line_buffer()
             cursor_position = self.readline.get_endidx()
-            completions = self.complete(line_buffer, cursor_position)
-            self._completions = sorted(set(completions.values()))
+
+            # merge the completions of each kind together into a
+            # a single sorted list, with no duplicates
+            c = self.complete(line_buffer, cursor_position)
+            # this is supposed to be the fasted way to flatten the lists,
+            # RE http://stackoverflow.com/questions/952914
+            self._completions = sorted(set([e for lst in c.values() for e in lst]))
 
             # if there is only a tab on a line with only whitespace, instead of
             # the mostly useless 'do you want to see all million completions'
@@ -204,6 +216,9 @@ class BaseMatcher(Configurable):
     """Abstract base class to be subclasses by all matchers.
     """
 
+    shell = Instance('IPython.core.interactiveshell.InteractiveShellABC')
+    __completion_manager = Instance('IPython.core.completer2.CompletionManager')
+
     exclusive = CBool(False, config=True, help="""
         Should the completions returned by this matcher be the *exclusive*
         matches displayed to the user?
@@ -218,24 +233,15 @@ class BaseMatcher(Configurable):
     def _exclusive_changed(self, name, old, new):
         """Notify the manager that the exclusivity of this matcher has
         changed"""
-        if new != old and (getattr(self, '_completion_manager', None)
-                           is not None):
-            self._completion_manager._matcher_exclusive_changed(self)
+        if new != old and self.__completion_manager is not None:
+            self.__completion_manager._matcher_exclusive_changed(self)
 
-    def _set_completion_manager(self, completion_manager):
-        """Set a reference to the manager handling this matcher
+    def _set_completion_manager(self, manager):
+        self.__completion_manager = manager
 
-        This is a callback, called by CompletionManager when the matcher is
-        registered.
-        """
-        # although it's bad practice to define attributes outside __init__,
-        # this seems like a special case since it allows us not to have to
-        # define an __init__ at all, which frees the subclasses that inherit
-        # from this base from having to call super(). If we end up needing
-        # to define an __init__ in this base class anyways,
-        # self._completion_manager should be set to None, and then
-        # _exclusive_changed will not have to use getattr.
-        self._completion_manager = completion_manager
+    def __init__(self, shell, config=None):
+        super(BaseMatcher, self).__init__(config=config)
+        self.shell = shell
 
     def match(self, event):
         """Recommend matches for a tab-completion event
@@ -317,6 +323,7 @@ class CompletionEvent(object):
 
     def __repr__(self):
         return '<CompletionEvent: %s>' % str(self.__dict__)
+
 
 class CompletionSplitter(object):
     """An object to split an input line in a manner similar to readline.

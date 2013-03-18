@@ -29,14 +29,15 @@ from IPython.utils.process import arg_split
 from IPython.core.completer2 import BaseMatcher
 from IPython.utils.dir2 import dir2
 from IPython.utils.traitlets import CBool, Enum
-from IPython.core.interactiveshell import InteractiveShell
+#from IPython.core.interactiveshell import InteractiveShell
 
 #-----------------------------------------------------------------------------
 # Globals
 #-----------------------------------------------------------------------------
 
 # Public API
-__all__ = ['GlobalMatcher', 'AttributeMatcher', 'FileMatcher']
+__all__ = ['GlobalMatcher', 'AttributeMatcher', 'FileMatcher',
+           'MagicsMatcher', 'AliasMatcher', 'KeywordArgMatcher']
 
 if sys.platform == 'win32':
     PROTECTABLES = ' '
@@ -53,18 +54,14 @@ class GlobalMatcher(BaseMatcher):
     in the local scope.
     """
 
-    namespace = InteractiveShell.instance().user_ns
-    global_namespace = InteractiveShell.instance().user_global_ns
-
     def match(self, event):
         if "." in event.text:
             return None
-
         matches = defaultdict(lambda: set())
         n = len(event.text)
         for kind, lst in (('keywords', keyword.kwlist),
-                          ('locals', self.namespace.keys()),
-                          ('locals', self.global_namespace.keys()),
+                          ('locals', self.shell.user_ns.keys()),
+                          ('locals', self.shell.user_global_ns.keys()),
                           ('builtins', __builtin__.__dict__)):
             for word in lst:
                 if word[:n] == event.text and word != '__builtins__':
@@ -108,9 +105,6 @@ class AttributeMatcher(BaseMatcher):
     attr_re = re.compile(r"(\S+(\.\w+)*)\.(\w*)$")
     greedy_attr_re = re.compile(r"(.+)\.(\w*)$")
 
-    namespace = InteractiveShell.instance().user_ns
-    global_namespace = InteractiveShell.instance().user_global_ns
-
     def match(self, event):
         m1 = self.attr_re.match(event.text)
         if m1:
@@ -129,10 +123,10 @@ class AttributeMatcher(BaseMatcher):
         try:
             # find the object in the namespace that the user is
             # refering to
-            obj = eval(expr, self.namespace)
+            obj = eval(expr, self.shell.user_ns)
         except:
             try:
-                obj = eval(expr, self.global_namespace)
+                obj = eval(expr, self.shell.user_global_ns)
             except:
                 # raise
                 return None
@@ -189,8 +183,8 @@ class FileMatcher(BaseMatcher):
         return [f.replace("\\", "/")
                 for f in self.glob("%s*" % text)]
 
-    def __init__(self, config=None):
-        super(FileMatcher, self).__init__(config=config)
+    def __init__(self, shell, config=None):
+        super(FileMatcher, self).__init__(shell, config=config)
 
         # Hold a local ref. to glob.glob for speed
         self.glob = glob.glob
@@ -273,14 +267,12 @@ class FileMatcher(BaseMatcher):
 class MagicsMatcher(BaseMatcher):
     """Match magics"""
 
-    magics_manager = InteractiveShell.instance().magics_manager
-
     def match(self, event):
 
         #print 'Completer->magic_matches:',text,'lb',self.text_until_cursor # dbg
         # Get all shell magics now rather than statically, so magics loaded at
         # runtime show up too.
-        lsm = self.magics_manager.lsmagic()
+        lsm = self.shell.magics_manager.lsmagic()
         line_magics = lsm['line']
         cell_magics = lsm['cell']
 
@@ -293,17 +285,15 @@ class MagicsMatcher(BaseMatcher):
         # - no prefix: do both
         # In other words, line magics are skipped if the user gives %% explicitly
         bare_text = event.text.lstrip(pre)
-        matches = [ pre2+m for m in cell_magics if m.startswith(bare_text)]
+        matches = [pre2 + m for m in cell_magics if m.startswith(bare_text)]
         if not event.text.startswith(pre2):
-            matches += [ pre+m for m in line_magics if m.startswith(bare_text)]
+            matches += [pre + m for m in line_magics if m.startswith(bare_text)]
 
         return {'magics': set(matches)}
 
 
 class AliasMatcher(BaseMatcher):
     """Match internal system aliases"""
-
-    alias_table = InteractiveShell.instance().alias_manager.alias_table
 
     def match(self, event):
         line, text = event.line, event.text
@@ -314,7 +304,7 @@ class AliasMatcher(BaseMatcher):
             return None
 
         text = os.path.expanduser(text)
-        aliases =  self.alias_table.keys()
+        aliases = self.shell.alias_manager.alias_table.keys()
         if text == '':
             matches = aliases
         else:
@@ -324,9 +314,6 @@ class AliasMatcher(BaseMatcher):
 
 class KeywordArgMatcher(BaseMatcher):
     """Match named parameters (kwargs) of the last open function"""
-
-    namespace = InteractiveShell.instance().user_ns
-    global_namespace = InteractiveShell.instance().user_global_ns
 
     # regexp to parse docstring for function signature
     docstring_sig_re = re.compile(r'^[\w|\s.]+\(([^)]*)\).*')
@@ -353,10 +340,10 @@ class KeywordArgMatcher(BaseMatcher):
             name = '.'.ids[::-1].join()
 
         try:
-            obj = eval(name, self.namespace)
+            obj = eval(name, self.shell.user_ns)
         except:
             try:
-                obj = eval(name, self.global_namespace)
+                obj = eval(name, self.shell.user_global_ns)
             except:
                 return None
 
@@ -365,8 +352,7 @@ class KeywordArgMatcher(BaseMatcher):
         for named_arg in named_args:
             if named_arg.startswith(event.text):
                 matches.add('%s=' % named_arg)
-        return {'kwargs' : matches}
-
+        return {'kwargs': matches}
 
     def default_arguments(self, obj):
         """Find the default arguments of a callable
@@ -405,17 +391,16 @@ class KeywordArgMatcher(BaseMatcher):
                 call_obj = obj.__call__
 
         arguments.update(self.default_arguments_from_docstring(
-                 getattr(call_obj, '__doc__', '')))
+                getattr(call_obj, '__doc__', '')))
 
         try:
-            args,_,_1,defaults = inspect.getargspec(call_obj)
+            args, _, _1, defaults = inspect.getargspec(call_obj)
             if defaults:
                 arguments.update(args[-len(defaults):])
         except TypeError:
             pass
 
         return arguments
-
 
     def default_arguments_from_docstring(self, docstring):
         """Parse the first line of docstring for call signature.
@@ -430,7 +415,7 @@ class KeywordArgMatcher(BaseMatcher):
             return arguments
 
         #care only the firstline
-        line = doc.lstrip().splitlines()[0]
+        line = docstring.lstrip().splitlines()[0]
 
         #p = re.compile(r'^[\w|\s.]+\(([^)]*)\).*')
         #'min(iterable[, key=func])\n' -> 'iterable[, key=func]'
@@ -484,7 +469,7 @@ def last_open_identifier(tokens):
     iterTokens = iter(reversed(tokens))
     tokens_after_identifier = []
 
-    openPar = 0 # number of open parentheses
+    openPar = 0  # number of open parentheses
     for token in iterTokens:
         tokens_after_identifier.insert(0, token)
         if token == ')':
@@ -504,7 +489,8 @@ def last_open_identifier(tokens):
         try:
             identifiers.append(next(iterTokens))
             if not isId(identifiers[-1]):
-                identifiers.pop(); break
+                identifiers.pop()
+                break
             if not next(iterTokens) == '.':
                 break
         except StopIteration:

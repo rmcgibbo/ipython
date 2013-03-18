@@ -1938,35 +1938,34 @@ class InteractiveShell(SingletonConfigurable):
         library), programatically (such as in test suites) or out-of-prcess
         (typically over the network by remote frontends).
         """
-        from IPython.core.completer import IPCompleter
-        from IPython.core.completerlib import (module_completer,
-                magic_run_completer, cd_completer, reset_completer)
+        if self.has_readline:
+            from IPython.core.completer2 import RLCompletionManager as CM
+        else:
+            from IPython.core.completer2 import CompletionManager as CM
 
-        self.Completer = IPCompleter(shell=self,
-                                     namespace=self.user_ns,
-                                     global_namespace=self.user_global_ns,
-                                     alias_table=self.alias_manager.alias_table,
-                                     use_readline=self.has_readline,
-                                     config=self.config,
-                                     )
+        self.Completer = CM(shell=self, config=self.config)
         self.configurables.append(self.Completer)
 
-        # Add custom completers to the basic ones built into IPCompleter
-        sdisp = self.strdispatchers.get('complete_command', StrDispatch())
-        self.strdispatchers['complete_command'] = sdisp
-        self.Completer.custom_completers = sdisp
+        from IPython.core import completerlib2 as m
+        self.Completer.register(m.GlobalMatcher, m.AttributeMatcher,
+            m.FileMatcher, m.MagicsMatcher, m.AliasMatcher,
+            m.KeywordArgMatcher)
 
-        self.set_hook('complete_command', module_completer, str_key = 'import')
-        self.set_hook('complete_command', module_completer, str_key = 'from')
-        self.set_hook('complete_command', magic_run_completer, str_key = '%run')
-        self.set_hook('complete_command', cd_completer, str_key = '%cd')
-        self.set_hook('complete_command', reset_completer, str_key = '%reset')
-
-        # Only configure readline if we truly are using readline.  IPython can
-        # do tab-completion over the network, in GUIs, etc, where readline
-        # itself may be absent
         if self.has_readline:
             self.set_readline_completer()
+
+        # Add custom completers to the basic ones built into IPCompleter
+        # sdisp = self.strdispatchers.get('complete_command', StrDispatch())
+        # self.strdispatchers['complete_command'] = sdisp
+        # self.Completer.custom_completers = sdisp
+
+        # self.set_hook('complete_command', module_completer, str_key = 'import')
+        # self.set_hook('complete_command', module_completer, str_key = 'from')
+        # self.set_hook('complete_command', magic_run_completer, str_key = '%run')
+        # self.set_hook('complete_command', cd_completer, str_key = '%cd')
+        # self.set_hook('complete_command', reset_completer, str_key = '%reset')
+
+
 
     def complete(self, text, line=None, cursor_pos=None):
         """Return the completed text and a list of completions.
