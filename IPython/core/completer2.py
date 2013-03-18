@@ -22,8 +22,6 @@ from collections import defaultdict
 from IPython.config.configurable import Configurable
 from IPython.utils.traitlets import CBool
 from IPython.utils.tokens import tokenize
-from IPython.core.ipapi import get as get_ipython
-
 
 #-----------------------------------------------------------------------------
 # Globals
@@ -31,6 +29,7 @@ from IPython.core.ipapi import get as get_ipython
 
 DELIMS = ' \t\n`!@#$^&*()=+[{]}\\|;:\'",<>?'
 GREEDY_DELIMS = ' =\r\n'
+
 
 # Public API
 __all__ = ['CompletionManager', 'BaseMatcher']
@@ -62,7 +61,6 @@ class CompletionManager(Configurable):
     def __init__(self, config=None, **kwargs):
         self.splitter = CompletionSplitter()
         self.matchers = []
-        self.namespace = get_ipython().user_ns
 
         super(CompletionManager, self).__init__(config=config, **kwargs)
 
@@ -131,7 +129,8 @@ class CompletionManager(Configurable):
                 # that are the same kind and the same match string, so the
                 # uniqueifying aspect of the set update is appropriate
                 for kind, v in these_matches.iteritems():
-                    collected_matches[kind].update(v)
+                    if len(v) > 0:
+                        collected_matches[kind].update(v)
 
         return dict((kind, sorted(v)) for kind, v in collected_matches.items())
 

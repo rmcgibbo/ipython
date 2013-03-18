@@ -17,15 +17,19 @@ import os
 import glob
 import sys
 import re
+import inspect
 import __builtin__
 import keyword
 from collections import defaultdict
 
+
+from IPython.core.inputsplitter import ESC_MAGIC
 from IPython.utils import generics
 from IPython.utils.process import arg_split
 from IPython.core.completer2 import BaseMatcher
 from IPython.utils.dir2 import dir2
 from IPython.utils.traitlets import CBool, Enum
+from IPython.core.interactiveshell import InteractiveShell
 
 #-----------------------------------------------------------------------------
 # Globals
@@ -45,12 +49,12 @@ else:
 
 
 class GlobalMatcher(BaseMatcher):
-    """Match python keywords, bultins, and variables
+    """Match python keywords, builtins, and variables
     in the local scope.
-
-    TODO: Figure out how to customize the namespace. It's
-    going to need to be passed in, not grabbed with get_ipython()
     """
+
+    namespace = InteractiveShell.instance().user_ns
+    global_namespace = InteractiveShell.instance().user_global_ns
 
     def match(self, event):
         if "." in event.text:
@@ -59,8 +63,9 @@ class GlobalMatcher(BaseMatcher):
         matches = defaultdict(lambda: set())
         n = len(event.text)
         for kind, lst in (('keywords', keyword.kwlist),
-                          ('locals', event.manager.namespace.keys()),
-                          ('bultins', __builtin__.__dict__)):
+                          ('locals', self.namespace.keys()),
+                          ('locals', self.global_namespace.keys()),
+                          ('builtins', __builtin__.__dict__)):
             for word in lst:
                 if word[:n] == event.text and word != '__builtins__':
                     matches[kind].add(word)
@@ -103,6 +108,9 @@ class AttributeMatcher(BaseMatcher):
     attr_re = re.compile(r"(\S+(\.\w+)*)\.(\w*)$")
     greedy_attr_re = re.compile(r"(.+)\.(\w*)$")
 
+    namespace = InteractiveShell.instance().user_ns
+    global_namespace = InteractiveShell.instance().user_global_ns
+
     def match(self, event):
         m1 = self.attr_re.match(event.text)
         if m1:
@@ -121,10 +129,13 @@ class AttributeMatcher(BaseMatcher):
         try:
             # find the object in the namespace that the user is
             # refering to
-            obj = eval(expr, event.manager.namespace)
+            obj = eval(expr, self.namespace)
         except:
-            # raise
-            return None
+            try:
+                obj = eval(expr, self.global_namespace)
+            except:
+                # raise
+                return None
 
         # get all of the attributes of that object
         if self.limit_to__all__ and hasattr(obj, '__all__'):
@@ -259,9 +270,247 @@ class FileMatcher(BaseMatcher):
         return {'files': set(matches)}
 
 
+class MagicsMatcher(BaseMatcher):
+    """Match magics"""
+
+    magics_manager = InteractiveShell.instance().magics_manager
+
+    def match(self, event):
+
+        #print 'Completer->magic_matches:',text,'lb',self.text_until_cursor # dbg
+        # Get all shell magics now rather than statically, so magics loaded at
+        # runtime show up too.
+        lsm = self.magics_manager.lsmagic()
+        line_magics = lsm['line']
+        cell_magics = lsm['cell']
+
+        pre = ESC_MAGIC
+        pre2 = pre+pre
+
+        # Completion logic:
+        # - user gives %%: only do cell magics
+        # - user gives %: do both line and cell magics
+        # - no prefix: do both
+        # In other words, line magics are skipped if the user gives %% explicitly
+        bare_text = event.text.lstrip(pre)
+        matches = [ pre2+m for m in cell_magics if m.startswith(bare_text)]
+        if not event.text.startswith(pre2):
+            matches += [ pre+m for m in line_magics if m.startswith(bare_text)]
+
+        return {'magics': set(matches)}
+
+
+class AliasMatcher(BaseMatcher):
+    """Match internal system aliases"""
+
+    alias_table = InteractiveShell.instance().alias_manager.alias_table
+
+    def match(self, event):
+        line, text = event.line, event.text
+
+        # if we are not in the first 'item', alias matching
+        # doesn't make sense - unless we are starting with 'sudo' command.
+        if ' ' in line and not line.startswith('sudo'):
+            return None
+
+        text = os.path.expanduser(text)
+        aliases =  self.alias_table.keys()
+        if text == '':
+            matches = aliases
+        else:
+            matches = [a for a in aliases if a.startswith(text)]
+        return {'aliases': matches}
+
+
+class KeywordArgMatcher(BaseMatcher):
+    """Match named parameters (kwargs) of the last open function"""
+
+    namespace = InteractiveShell.instance().user_ns
+    global_namespace = InteractiveShell.instance().user_global_ns
+
+    # regexp to parse docstring for function signature
+    docstring_sig_re = re.compile(r'^[\w|\s.]+\(([^)]*)\).*')
+    docstring_kwd_re = re.compile(r'[\s|\[]*(\w+)(?:\s*=\s*.*)')
+
+    def match(self, event):
+        if "." in event.text or '(' not in event.line:
+            # a keyword cannot have a dot in it
+            # the line must have a paren -- we don't want to trigger
+            # tokenization if we don't need to
+            return None
+
+        # 1. find the nearest identifier that comes before an unclosed
+        # parenthesis before the cursor
+        # e.g. for "foo (1+bar(x), pa<cursor>,a=1)", the candidate is "foo"
+        try:
+            ids = last_open_identifier(event.tokens)[0]
+        except ValueError:
+            return None
+
+        if len(ids) == 1:
+            name = ids[0]
+        else:
+            name = '.'.ids[::-1].join()
+
+        try:
+            obj = eval(name, self.namespace)
+        except:
+            try:
+                obj = eval(name, self.global_namespace)
+            except:
+                return None
+
+        named_args = self.default_arguments(obj)
+        matches = set()
+        for named_arg in named_args:
+            if named_arg.startswith(event.text):
+                matches.add('%s=' % named_arg)
+        return {'kwargs' : matches}
+
+
+    def default_arguments(self, obj):
+        """Find the default arguments of a callable
+
+        This method trys both using the inspect module, and by limited
+        parsing of the docstring.
+
+        Parameters
+        ----------
+        obj : callable
+            obj should be a function, method, class, etc.
+
+        Returns
+        -------
+        arguments : set
+            A set of strings, containing the names of the arguments that
+            accept a default value
+        """
+        call_obj = obj
+        arguments = set()
+
+        if inspect.isbuiltin(obj):
+            return arguments
+
+        if not (inspect.isfunction(obj) or inspect.ismethod(obj)):
+            if inspect.isclass(obj):
+                # for cython embededsignature=True the constructor docstring
+                # belongs to the object itself not __init__
+                arguments.add(self.default_arguments_from_docstring(
+                            getattr(obj, '__doc__', '')))
+                # for classes, check for __init__, __new__
+                call_obj = (getattr(obj, '__init__', None) or
+                       getattr(obj, '__new__', None))
+            # for all others, check if they are __call__able
+            elif hasattr(obj, '__call__'):
+                call_obj = obj.__call__
+
+        arguments.update(self.default_arguments_from_docstring(
+                 getattr(call_obj, '__doc__', '')))
+
+        try:
+            args,_,_1,defaults = inspect.getargspec(call_obj)
+            if defaults:
+                arguments.update(args[-len(defaults):])
+        except TypeError:
+            pass
+
+        return arguments
+
+
+    def default_arguments_from_docstring(self, docstring):
+        """Parse the first line of docstring for call signature.
+
+        Docstring should be of the form 'min(iterable[, key=func])\n'.
+        It can also parse cython docstring of the form
+        'Minuit.migrad(self, int ncall=10000, resume=True, int nsplit=1)'.
+        """
+        arguments = set()
+
+        if docstring is None:
+            return arguments
+
+        #care only the firstline
+        line = doc.lstrip().splitlines()[0]
+
+        #p = re.compile(r'^[\w|\s.]+\(([^)]*)\).*')
+        #'min(iterable[, key=func])\n' -> 'iterable[, key=func]'
+        signature = self.docstring_sig_re.search(line)
+        if not signature:
+            return arguments
+
+        # iterable[, key=func]' -> ['iterable[' ,' key=func]']
+        for s in signature.group(0).split(','):
+            arguments.add(self.docstring_kwd_re.findall(s))
+
+        return arguments
+
+
 #-----------------------------------------------------------------------------
 # Utilities
 #-----------------------------------------------------------------------------
+
+
+def last_open_identifier(tokens):
+    """Find the the nearest identifier (function/method/callable name)
+    that comes before the last unclosed parentheses
+
+    Parameters
+    ----------
+    tokens : list of strings
+        tokens should be a list of python tokens produced by splitting
+        a line of input
+
+    Returns
+    -------
+    identifiers : list
+        A list of tokens from `tokens` that are identifiers for the function
+        or method that comes before an unclosed partentheses
+    call_tokens : list
+        The subset of the tokens that occur after `identifiers` in the input,
+        starting with the open parentheses of the function call
+
+    Raises
+    ------
+    ValueError if the line doesn't match
+
+    See Also
+    --------
+    tokenize : to generate `tokens`
+    cursor_argument
+    """
+
+    # 1. pop off the tokens until we get to the first unclosed parens
+    # as we pop them off, store them in a list
+    iterTokens = iter(reversed(tokens))
+    tokens_after_identifier = []
+
+    openPar = 0 # number of open parentheses
+    for token in iterTokens:
+        tokens_after_identifier.insert(0, token)
+        if token == ')':
+            openPar -= 1
+        elif token == '(':
+            openPar += 1
+            if openPar > 0:
+                # found the last unclosed parenthesis
+                break
+    else:
+        raise ValueError()
+
+    # 2. Concatenate dotted names ("foo.bar" for "foo.bar(x, pa" )
+    identifiers = []
+    isId = re.compile(r'\w+$').match
+    while True:
+        try:
+            identifiers.append(next(iterTokens))
+            if not isId(identifiers[-1]):
+                identifiers.pop(); break
+            if not next(iterTokens) == '.':
+                break
+        except StopIteration:
+            break
+
+    return identifiers[::-1], tokens_after_identifier
 
 
 def has_open_quotes(s):
