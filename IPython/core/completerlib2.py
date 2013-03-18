@@ -13,15 +13,31 @@
 # Imports
 #-----------------------------------------------------------------------------
 
+import os
+import glob
+import sys
 import re
 import __builtin__
 import keyword
 from collections import defaultdict
 
 from IPython.utils import generics
+from IPython.utils.process import arg_split
 from IPython.core.completer2 import BaseMatcher
 from IPython.utils.dir2 import dir2
 from IPython.utils.traitlets import CBool, Enum
+
+#-----------------------------------------------------------------------------
+# Globals
+#-----------------------------------------------------------------------------
+
+# Public API
+__all__ = ['GlobalMatcher', 'AttributeMatcher', 'FileMatcher']
+
+if sys.platform == 'win32':
+    PROTECTABLES = ' '
+else:
+    PROTECTABLES = ' ()[]{}?=\\|;:\'#*"^&'
 
 #-----------------------------------------------------------------------------
 # Classes
@@ -139,3 +155,140 @@ class AttributeMatcher(BaseMatcher):
         n = len(attr)
         res = ["%s.%s" % (expr, w) for w in words if w[:n] == attr]
         return {'attributes': set(res)}
+
+
+class FileMatcher(BaseMatcher):
+    """Match filenames, expanding ~USER type strings.
+
+    Most of the seemingly convoluted logic in this completer is an
+    attempt to handle filenames with spaces in them.  And yet it's not
+    quite perfect, because Python's readline doesn't expose all of the
+    GNU readline details needed for this to be done correctly.
+
+    For a filename with a space in it, the printed completions will be
+    only the parts after what's already been typed (instead of the
+    full completions, as is normally done).  I don't think with the
+    current (as of Python 2.3) Python readline it's possible to do
+    better."""
+
+
+
+    def _clean_glob(self, text):
+        return self.glob("%s*" % text)
+
+    def _clean_glob_win32(self, text):
+        return [f.replace("\\", "/")
+                for f in self.glob("%s*" % text)]
+
+    def __init__(self, config=None):
+        super(FileMatcher, self).__init__(config=config)
+
+        # Hold a local ref. to glob.glob for speed
+        self.glob = glob.glob
+
+        if sys.platform == "win32":
+            self.clean_glob = self._clean_glob_win32
+        else:
+            self.clean_glob = self._clean_glob
+
+    def match(self, event):
+        # chars that require escaping with backslash - i.e. chars
+        # that readline treats incorrectly as delimiters, but we
+        # don't want to treat as delimiters in filename matching
+        # when escaped with backslash
+
+        line, text = event.line, event.text
+        if text.startswith('!'):
+            text = text[1:]
+            text_prefix = '!'
+        else:
+            text_prefix = ''
+
+        # track strings with open quotes
+        open_quotes = has_open_quotes(line)
+
+        if '(' in line or '[' in line:
+            lsplit = text
+        else:
+            try:
+                # arg_split ~ shlex.split, but with unicode bugs fixed by us
+                lsplit = arg_split(line)[-1]
+            except ValueError:
+                # typically an unmatched ", or backslash without escaped char.
+                if open_quotes:
+                    lsplit = line.split(open_quotes)[-1]
+                else:
+                    return []
+            except IndexError:
+                # tab pressed on empty line
+                lsplit = ""
+
+        if not open_quotes and lsplit != protect_filename(lsplit):
+            # if protectables are found, do matching on the whole escaped name
+            has_protectables = True
+            text0, text = text, lsplit
+        else:
+            has_protectables = False
+            text = os.path.expanduser(text)
+
+        if text == "":
+            return [text_prefix + protect_filename(f) for f in self.glob("*")]
+
+        # Compute the matches from the filesystem
+        m0 = self.clean_glob(text.replace('\\', ''))
+
+        if has_protectables:
+            # If we had protectables, we need to revert our changes to the
+            # beginning of filename so that we don't double-write the part
+            # of the filename we have so far
+            len_lsplit = len(lsplit)
+            matches = [text_prefix + text0 +
+                       protect_filename(f[len_lsplit:]) for f in m0]
+        else:
+            if open_quotes:
+                # if we have a string with an open quote, we don't need to
+                # protect the names at all (and we _shouldn't_, as it
+                # would cause bugs when the filesystem call is made).
+                matches = m0
+            else:
+                matches = [text_prefix + protect_filename(f) for f in m0]
+
+        if len(matches) == 0:
+            return None
+
+        # Mark directories in input list by appending '/' to their names.
+        matches = [x + '/' if os.path.isdir(x) else x for x in matches]
+        return {'files': set(matches)}
+
+
+#-----------------------------------------------------------------------------
+# Utilities
+#-----------------------------------------------------------------------------
+
+
+def has_open_quotes(s):
+    """Return whether a string has open quotes.
+
+    This simply counts whether the number of quote characters of either type in
+    the string is odd.
+
+    Returns
+    -------
+    If there is an open quote, the quote character is returned.  Else, return
+    False.
+    """
+    # We check " first, then ', so complex cases with nested quotes will get
+    # the " to take precedence.
+    if s.count('"') % 2:
+        return '"'
+    elif s.count("'") % 2:
+        return "'"
+    else:
+        return False
+
+
+def protect_filename(s):
+    """Escape a string to protect certain characters."""
+
+    return "".join([(ch in PROTECTABLES and '\\' + ch or ch)
+                    for ch in s])
