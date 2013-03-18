@@ -171,8 +171,6 @@ class FileMatcher(BaseMatcher):
     current (as of Python 2.3) Python readline it's possible to do
     better."""
 
-
-
     def _clean_glob(self, text):
         return self.glob("%s*" % text)
 
