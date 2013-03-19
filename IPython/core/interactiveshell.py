@@ -1946,10 +1946,11 @@ class InteractiveShell(SingletonConfigurable):
         self.Completer = CM(shell=self, config=self.config)
         self.configurables.append(self.Completer)
 
-        from IPython.core import completerlib2 as m
-        self.Completer.register(m.GlobalMatcher, m.AttributeMatcher,
-            m.FileMatcher, m.MagicsMatcher, m.AliasMatcher,
-            m.KeywordArgMatcher, m.CDMatcher, m.ShellLineMatcher)
+        from IPython.core import completers as m
+        self.Completer.register(m.AliasCompleter, m.GlobalCompleter,
+            m.AttributeCompleter, m.FileCompleter, m.CDCompleter,
+            m.ShellLineCompleter, m.KeywordArgCompleter, m.MagicsCompleter,
+            m.ModuleCompleter)
 
         if self.has_readline:
             self.set_readline_completer()
@@ -2012,14 +2013,14 @@ class InteractiveShell(SingletonConfigurable):
         with self.builtin_trap:
             return self.Completer.complete(text, line, cursor_pos)
 
-    def set_custom_completer(self, completer, pos=0):
-        """Adds a new custom completer function.
-
-        The position argument (defaults to 0) is the index in the completers
-        list where you want the completer to be inserted."""
-
-        newcomp = types.MethodType(completer,self.Completer)
-        self.Completer.matchers.insert(pos,newcomp)
+    # def set_custom_completer(self, completer, pos=0):
+    #     """Adds a new custom completer function.
+    # 
+    #     The position argument (defaults to 0) is the index in the completers
+    #     list where you want the completer to be inserted."""
+    # 
+    #     newcomp = types.MethodType(completer,self.Completer)
+    #     self.Completer.matchers.insert(pos,newcomp)
 
     def set_readline_completer(self):
         """Reset readline's completer to be our own."""

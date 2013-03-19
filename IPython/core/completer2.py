@@ -29,9 +29,8 @@ from IPython.utils.tokens import tokenize
 DELIMS = ' \t\n`!@#$^&*()=+[{]}\\|;:\'",<>?'
 GREEDY_DELIMS = ' =\r\n'
 
-
 # Public API
-__all__ = ['CompletionManager', 'BaseMatcher']
+__all__ = ['CompletionManager', 'BaseCompleter']
 
 #-----------------------------------------------------------------------------
 # Classes
@@ -40,7 +39,7 @@ __all__ = ['CompletionManager', 'BaseMatcher']
 
 class CompletionManager(Configurable):
     """Main entry point for the tab completion system. Here, you can register
-    new matcher classes, and ask for the completions on a block of text.
+    new completer classes, and ask for the completions on a block of text.
     """
 
     shell = Instance('IPython.core.interactiveshell.InteractiveShellABC')
@@ -54,6 +53,9 @@ class CompletionManager(Configurable):
         calls, etc., but can be unsafe because the code is actually evaluated
         on TAB.""")
 
+    debug = CBool(True, help="""
+        In debug mode, we'll display tracebacks when completers fail.""")
+
     def _greedy_changed(self, name, old, new):
         """update the splitter and readline delims when greedy is changed"""
         if new:
@@ -66,37 +68,45 @@ class CompletionManager(Configurable):
         self.shell = shell
         super(CompletionManager, self).__init__(config=config, **kwargs)
 
-    def register(self, *matcher_objects):
-        """Register a new matcher
+    def register(self, *completer_objects):
+        """Register one or more new completers
+
+        Each completer should be either be a subclass or instance of
+        a subclass of BaseCompleter.
+
+        If classes are given, they will be instantiated with the default
+        constructor.  If your classes need a custom constructor, you should
+        instanitate them first and pass the instance.
         """
 
-        for m in matcher_objects:
+        for m in completer_objects:
             if type(m) in (type, MetaHasTraits):
                 # If we're given an uninstantiated class
                 m = m(shell=self.shell, config=self.config)
 
-            if isinstance(m, BaseMatcher):
+            if isinstance(m, BaseCompleter):
                 if m.exclusive:
-                    # for efficiency, put exclusive matchers at the beginning
-                    # of the matchers list.
+                    # for efficiency, put exclusive completers at the beginning
+                    # of the completers list.
                     self.registry.insert(0, m)
                 else:
                     self.registry.append(m)
                 m._set_completion_manager(self)
             else:
-                raise TypeError('%s object is not an instance of BaseMatcher' %
-                                type(m))
+                raise TypeError('%s object is not an instance of '
+                                'BaseCompleter' % type(m))
 
-    def _matcher_exclusive_changed(self, matcher):
-        """Notify the CompletionManager that one of its matchers has changed
+
+    def _completer_exclusive_changed(self, completer):
+        """Notify the CompletionManager that one of its completer has changed
         its exclusivity policy.
         """
 
-        if matcher not in self.registry:
-            raise ValueError('the matcher being notified on is not registered')
-        # re-insert it into the list of matchers
-        self.registry.remove(matcher)
-        self.register_matcher(matcher)
+        if completer not in self.registry:
+            raise ValueError('the completer being notified on is not registered')
+        # re-insert it into the list of completers
+        self.registry.remove(completer)
+        self.register(completer)
 
     def complete(self, block, cursor_position=None):
         """Recommend possible completions for a given input block
@@ -122,11 +132,18 @@ class CompletionManager(Configurable):
         event = CompletionEvent(block[:cursor_position], self, self.splitter)
         collected_matches = defaultdict(lambda: set([]))
 
-        for matcher in self.registry:
-            these_matches = matcher.match(event)
-            if matcher.exclusive and (these_matches is not None) and \
+        for completer in self.registry:
+            try:
+                these_matches = completer.match(event)
+            except:
+                # Show the ugly traceback if the completer causes an
+                # exception, but do NOT crash the kernel!
+                if self.debug:
+                    sys.excepthook(*sys.exc_info())
+
+            if completer.exclusive and (these_matches is not None) and \
                     (len(these_matches) > 0):
-            # if the matcher is `exclusive`, we ONLY return its results
+            # if the completer is `exclusive`, we ONLY return its results
                 collected_matches = these_matches
                 break
 
@@ -145,6 +162,9 @@ class CompletionManager(Configurable):
 
 class RLCompletionManager(CompletionManager):
     """A readline version of the CompletionManager"""
+
+    active = CBool(True, help="""
+        Activate the readline tab completion system.""")
 
     def __init__(self, shell, config=None):
         import IPython.utils.rlineimpl as readline
@@ -212,35 +232,62 @@ class RLCompletionManager(CompletionManager):
             return None
 
 
-class BaseMatcher(Configurable):
-    """Abstract base class to be subclasses by all matchers.
+class BaseCompleter(Configurable):
+    """Abstract base class to be subclasses by all completers.
     """
 
     shell = Instance('IPython.core.interactiveshell.InteractiveShellABC')
     __completion_manager = Instance('IPython.core.completer2.CompletionManager')
 
-    exclusive = CBool(False, config=True, help="""
-        Should the completions returned by this matcher be the *exclusive*
+    exclusive = CBool(False, help="""
+        Should the completions returned by this completer be the *exclusive*
         matches displayed to the user?
 
-        If this property is true, other when this matcher returns more than
+        If this property is true, other when this completer returns more than
         one match, its results will be shown exclusively to the client. Other
-        matches will be excluded. This is generally not required, but may be
-        suitable for use in contexts in which highly specialized inputs are
-        required by the user, and other inputs may be invalid.
-        """)
+        matches will be excluded. This is suitable for specialized completers
+        that only respond in a limited context. For example, the completer
+        that is activated when the user types "import <TAB>" displays its
+        results exclusively to the user, since other completions in that
+        circumstance are not appropriate.""")
+
+    str_key = Unicode('', help="""
+        Only invoke the completer when the line begins with this key. For
+        example, this feature may be used by the custom completer for the
+        `cd` command to only respond when the line begins with `cd`. If the
+        (default) empty string is used, the completer will be invoked on
+        every tab event, and can manually check the CompletionEvent,
+        returning `None` if it elects not to recommend any completions.""")
+
+    re_key = Unicode('', help="""
+        Only invoke the completer when the line matches this regular
+        expression. If the (default) empty string is used, no regex matching
+        will be performed, the completer will be invoked on every tab event.
+        The completer can manually check the `CompletionEvent`, returning
+        `None` if it elects not to recommend any completions.""")
+
+    filter_results = Bool(True, help="""
+        Filter the results returned by this matcher, only retaining those
+        that begin with the string in the `text` attribute of the supplied
+        completion event. This ensures, for example, that the matcher
+        returns a set of strings, e.g. 'foo' and 'bar', and the user has
+        typed an 'f', only the 'foo' match will be displayed.
+
+        Note: in situations that require more complicated line parsing that
+        simply the split on readline delimiters, it is appropriate to turn
+        this option off.""")
 
     def _exclusive_changed(self, name, old, new):
-        """Notify the manager that the exclusivity of this matcher has
+        """Notify the manager that the exclusivity of this completer has
         changed"""
         if new != old and self.__completion_manager is not None:
-            self.__completion_manager._matcher_exclusive_changed(self)
+            self.__completion_manager._completer_exclusive_changed(self)
 
     def _set_completion_manager(self, manager):
         self.__completion_manager = manager
 
     def __init__(self, shell, config=None):
-        super(BaseMatcher, self).__init__(config=config)
+        super(BaseCompleter, self).__init__(config=config)
         self.shell = shell
 
     def match(self, event):
@@ -269,13 +316,17 @@ class CompletionEvent(object):
     ----------
     block : str
         The complete input block, upto the cursor position.
-    lines : list
+    lines : list of str
         The block, after splitting on newlines.
     line : str
         The last line
-    split : list
+    split : list of str
         A list of strings, formed by splitting `block` on all readline
-        delimiters.
+        delimiters. Note: the split does not preserve the delimiters, so if
+        you concatenate the split back together, you will not recreate the
+        line. For example, if the line is ' hello {} world', split will
+        be ['hello', 'world']. However, if the line ENDS in a delimiter,
+        that will be part of the split, as an empty string at the end.
     text : str
         The last element in `split`. For readline clients, all matches are
         expected to start with `text`.
@@ -372,4 +423,8 @@ class CompletionSplitter(object):
     def split(self, block):
         """Split a line of text with a cursor at the given position.
         """
-        return self._delim_re.split(block)
+        splits = self._delim_re.split(block)
+        non_redundant = [e for e in splits if len(e) > 0]
+        if splits[-1] == '':
+            non_redundant.append('')
+        return non_redundant
