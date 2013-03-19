@@ -19,7 +19,8 @@ import re
 from collections import defaultdict
 
 from IPython.config.configurable import Configurable
-from IPython.utils.traitlets import CBool, Instance, MetaHasTraits, List
+from IPython.utils.traitlets import (CBool, Instance, MetaHasTraits, List,
+                                     CUnicode)
 from IPython.utils.tokens import tokenize
 
 #-----------------------------------------------------------------------------
@@ -251,7 +252,7 @@ class BaseCompleter(Configurable):
         results exclusively to the user, since other completions in that
         circumstance are not appropriate.""")
 
-    str_key = Unicode('', help="""
+    str_key = CUnicode('', help="""
         Only invoke the completer when the line begins with this key. For
         example, this feature may be used by the custom completer for the
         `cd` command to only respond when the line begins with `cd`. If the
@@ -259,14 +260,14 @@ class BaseCompleter(Configurable):
         every tab event, and can manually check the CompletionEvent,
         returning `None` if it elects not to recommend any completions.""")
 
-    re_key = Unicode('', help="""
+    re_key = CUnicode('', help="""
         Only invoke the completer when the line matches this regular
         expression. If the (default) empty string is used, no regex matching
         will be performed, the completer will be invoked on every tab event.
         The completer can manually check the `CompletionEvent`, returning
         `None` if it elects not to recommend any completions.""")
 
-    filter_results = Bool(True, help="""
+    filter_results = CBool(True, help="""
         Filter the results returned by this matcher, only retaining those
         that begin with the string in the `text` attribute of the supplied
         completion event. This ensures, for example, that the matcher
