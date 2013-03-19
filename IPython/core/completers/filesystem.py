@@ -207,8 +207,9 @@ class ShellLineCompleter(FileCompleter):
             matches = {'locals': set()}
 
         text = event.text
-
-        if (text == '' and event.tokens[-1] == '{') or event.tokens[-2] == '{':
+        
+        if (text == '' and event.tokens[-1] == '{') or \
+                (len(event.tokens) > 2 and event.tokens[-2] == '{'):
             prefix = ''
         else:
             prefix = '{'
